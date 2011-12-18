@@ -1,0 +1,648 @@
+op10	  EQU	 s0;	1st operand LSB
+op11	  EQU 	 s1;	1st operand MSB
+op20	  EQU	 s2;	2nd operand LSB
+op21	  EQU	 s3;	2nd operand MSB
+res0	  EQU	 s4;	result register byte 0
+res1	  EQU	 s5;	result register byte 1
+res2	  EQU	 s6;	result register byte 2
+res3	  EQU	 s7;	result register byte 3
+temp0	  EQU	 s8;	temporary storage
+temp1	  EQU	 s9;	temporary storage
+counter	  EQU	 sA;	counter
+
+FP		  EQU    sB;	Full part
+FR		  EQU	 sC;	Fraction part
+KEYCODE	  EQU 	 sD; 	Keycode temp
+
+MASK_LSB  EQU 	 sE;	Mask LSB
+MASK_MSB  EQU    sF;	Mask MSB
+
+
+;constants
+; SCRATCH_PAD_ADDRESSES
+RAM_1	  EQU 	 1
+RAM_2	  EQU    2
+; BUTTON CODES
+NUM_1	  EQU	 $69
+NUM_2	  EQU	 $72
+NUM_3	  EQU	 $7A
+NUM_4	  EQU	 $6B
+NUM_5	  EQU	 $73
+NUM_6	  EQU	 $74
+NUM_7	  EQU	 $6C
+NUM_8	  EQU	 $75
+NUM_9	  EQU	 $7D
+NUM_0	  EQU	 $70
+SPEC	  EQU	 $71
+PLUS	  EQU	 $79
+MINUS	  EQU	 $7B
+MULT	  EQU	 $7C
+DIV		  EQU	 $4A
+ENT		  EQU	 $5A
+ESC		  EQU	 $76
+
+; IMAGE CODES
+IMG_PLUS	 EQU $0A
+IMG_MINUS	 EQU $0B
+IMG_MULT	 EQU $0C
+IMG_DIV		 EQU $0D
+IMG_POINT	 EQU $0E
+IMG_BLANK	 EQU $0F
+
+; PORTS
+KBR_IN	  DSIO	 $80
+
+; Input display
+port1	  DSOUT 43 	; Full part
+port2	  DSOUT 44	; Point sign
+port3	  DSOUT 45	; Fraction part, first digit
+port4	  DSOUT 46	; Fraction part, second digit
+
+; Result output
+port5	  DSOUT 53
+port6	  DSOUT 54
+port7	  DSOUT 55
+port8	  DSOUT 56
+
+; CODE
+
+EINT ; Enable interrupts
+
+LOOP:
+	 JUMP LOOP
+
+
+MULTIPLYBY10:
+	ADD temp0, res0
+	SUB temp1, 1
+	JUMP NZ, MULTIPLYBY10
+RET
+
+ADDTOFP:
+	ADD FP, temp0
+	OUT temp0, port1	 ; Full part
+RET
+
+PRESHIFT:
+	; Shift until OP2 MSB is 1
+	
+	SL0 op20
+	SLA op21
+	
+	ADD counter, 1
+	
+	COMP op21, 128
+	JUMP C, PRESHIFT
+	
+	ADD counter, 1
+RET
+
+DIVSL0:
+	SL0 res0
+	SLA res1
+	
+	COMP temp0, temp1
+RET
+
+DIVSL1:
+	; OP1 = OP1 - OP2
+
+	SUB  op10, op20
+	SUBC op11, op21
+
+	SL1 res0
+	SLA res1
+	
+	COMP temp0, temp1	
+	; Flags are potentially modified ->
+	; making the comparison once again
+RET
+
+EQMSB:
+	; What happends when MSB are equal ->
+	; comparing LSB
+	
+	LOAD temp0, op10
+	LOAD temp1, op20
+	
+	COMP op10, op20
+	CALL C,  DIVSL0
+	CALL NC, DIVSL1
+	
+	COMP op11, op21
+JUMP $027	   ; Avoid returning back to comparison
+
+DIVIDE:
+	; Division algorithm res0 = LSB, res1 = MSB
+	
+	; Checking if OP1 <(!) OP2:
+	; op11 should be less than op21 OR if
+	; op11 = op21, op10 should be less than op20
+	
+	LOAD temp0, op11
+	LOAD temp1, op21
+	
+	COMP op11, op21
+	JUMP Z,  EQMSB  	; op11 = op21, check LSB
+	CALL C,  DIVSL0		; op11 < op21
+	CALL NC, DIVSL1		; op11 > op21
+	
+	SR0 op21	
+	SRA op20
+	
+	SUB counter, 1
+	
+	COMP counter, 0
+	JUMP NZ, DIVIDE
+RET
+	
+FR2BFR:
+	; Converting fraction dec part to binary fraction
+	; Multiply by 256 ( << 8) and divide by 100
+	
+	SL0 FR
+	SLA temp0
+	
+	SL0 FR
+	SLA temp0
+	
+	SL0 FR
+	SLA temp0
+	
+	SL0 FR
+	SLA temp0
+	
+	SL0 FR
+	SLA temp0
+	
+	SL0 FR
+	SLA temp0
+	
+	SL0 FR
+	SLA temp0
+	
+	SL0 FR
+	SLA temp0
+	
+	; Divide by 100
+	LOAD counter, 0
+	LOAD op11, temp0
+	LOAD op10, FR	
+	LOAD op21, 0 	
+	LOAD op20, 100	
+	
+	LOAD res0, 0
+	LOAD res1, 0
+	
+	CALL PRESHIFT
+	CALL DIVIDE
+	
+	LOAD FR, res0
+	LOAD res0, 0
+	LOAD res1, 0
+	LOAD op10, 0
+	LOAD op11, 0
+	LOAD op20, 0
+	LOAD op21, 0
+	LOAD temp0, 0
+	LOAD counter, 0
+RET
+
+MULTIPLYADDTOFR:
+	LOAD res0, temp0
+	
+	OUT  temp0, port3 	   ; FP, first digit
+	LOAD temp1, IMG_POINT
+	OUT  temp1, port2	   ; Draw a point
+	
+	LOAD temp1, 9
+	CALL MULTIPLYBY10
+	
+	LOAD res0, 0
+	ADD FR, temp0
+RET
+
+ADDTOFR:
+	ADD FR, temp0
+	OUT temp0, port4 	   ; FP, second digit
+RET	
+
+MULTADD:
+		; Corresponding bit of the multiplier is 1
+		; -> add op1 to the result
+		
+		ADD  res0, op10
+		ADDC res1, op11
+		ADDC res2, temp0
+		ADDC res3, temp1
+RET
+
+MULTIPLY:
+		 AND op20, MASK_LSB
+		
+	 	 COMP op20, 0
+	 	 CALL NZ, MULTADD
+	 	 
+	 	 AND op21, MASK_MSB
+
+		 COMP op21, 0
+		 CALL NZ, MULTADD
+
+		 ;	  Shift mask left (<< 1)
+		 SL0  MASK_LSB
+		 SLA  MASK_MSB
+
+		 ;	  Shift the multiplied value
+		 SL0 op10
+		 SLA op11
+		 SLA temp0
+		 SLA temp1
+		 
+		 ;	  Return original values because of
+		 ;	  the mask effect
+		 
+		 LOAD op20, FR
+		 LOAD op21, FP
+
+		 SUB counter, 1
+
+		 COMP counter, 0
+		 JUMP NZ, MULTIPLY	
+RET
+
+CALCULATE:
+         ; Pow, x^2
+	     LOAD op21, FP
+		 LOAD op20, FR
+		 LOAD op11, FP
+		 LOAD op10, FR
+		
+		 LOAD MASK_LSB, 1
+		 LOAD MASK_MSB, 0
+	
+		 LOAD counter, 16
+		
+		 CALL MULTIPLY
+		 
+		 ; Crop the nessessary part
+		 LOAD res0, res1
+		 LOAD res1, res2
+		
+		 ; Divide by 2 ( >> 1) = x^2 / 2
+		 SR0 res1
+		 SRA res0
+		 
+		 STORE res0, RAM_1	; Fraction (FR) x^2/2
+		 STORE res1, RAM_2	; Full part(FP) x^2/2
+		 
+		 LOAD counter, 0
+	  	 LOAD temp0, 0
+		 LOAD temp1, 0
+		 LOAD counter, 16
+		 LOAD MASK_LSB, 1
+		 LOAD MASK_MSB, 0
+		 
+		 LOAD op10, res0
+		 LOAD op11, res1
+		 LOAD op20, res0
+		 LOAD op21, res1
+		 LOAD FR, res0
+		 LOAD FP, res1
+		 
+		 LOAD res0, 0
+		 LOAD res1, 0
+		 LOAD res2, 0
+		 LOAD res3, 0
+		 
+		 CALL MULTIPLY
+		 
+		 ; Crop the nessessary part
+	  	 LOAD res0, res1
+		 LOAD res1, res2
+		 
+		 ; Divide by 2 (>> 1) = x^4 / 8
+		 SR0 res1
+		 SRA res0
+		 
+		 ; Divide by 3 = x^4 / 24
+ 	 	 LOAD op10, res0
+		 LOAD op11, res1
+		 LOAD op21, 0 	
+		 LOAD op20, 3
+		 LOAD counter, 0
+		 LOAD res0, 0
+		 LOAD res1, 0
+		
+		 CALL PRESHIFT	
+		 CALL DIVIDE
+		 
+		 LOAD temp0, res0
+		 LOAD temp1, res1
+		 
+		 FETCH res0, RAM_1
+		 FETCH res1, RAM_2
+		 
+		 ; x^2/2 + x^4/24
+		 ADD  temp0, res0
+		 ADDC temp1, res1
+		
+		 ; 1 + x^2/2 + x^4/24
+		 ADD temp1,	 1
+ RET
+
+DISPLAY:
+		; BCD convertations:
+		
+		OUT  temp1, port5 	; Full part AS IS, e.g
+		
+		; Processing fraction part:
+		LOAD res0, IMG_POINT
+		OUT	 res0,  port6	; Point sign
+		
+		; Getting the first digit from fraction
+		; e.g multiply by 10
+		LOAD counter, 0
+	  	
+		LOAD counter, 16
+		LOAD MASK_LSB, 1
+		LOAD MASK_MSB, 0
+		
+		LOAD op10, temp0
+		LOAD op11, 0
+		LOAD op20, 10
+		LOAD op21, 0
+		LOAD FR, 10
+		LOAD FP, 0
+		
+		LOAD temp0, 0
+		LOAD temp1, 0
+		
+		LOAD res0, 0
+		LOAD res1, 0
+		LOAD res2, 0
+		LOAD res3, 0		
+		
+		CALL MULTIPLY
+		
+		OUT res1, port7   ; First fraction digit
+		
+		; Getting the second digit from fraction
+		LOAD counter, 0
+	  	
+		LOAD counter, 16
+		LOAD MASK_LSB, 1
+		LOAD MASK_MSB, 0
+		
+		LOAD op10, res0
+		LOAD op11, 0
+		LOAD op20, 10
+		LOAD op21, 0
+		LOAD FR, 10
+		LOAD FP, 0
+		
+		LOAD temp0, 0
+		LOAD temp1, 0
+		
+		LOAD res0, 0
+		LOAD res1, 0
+		LOAD res2, 0
+		LOAD res3, 0		
+		
+		CALL MULTIPLY
+		
+		OUT res1, port8   ; Second fraction digit
+RET
+
+ENTER:
+	  ; Enter key is pressed:
+	  ; Converting dec fraction part to binary representation
+	  CALL FR2BFR 
+	  
+	  CALL CALCULATE
+	  CALL DISPLAY
+	  
+	  RET
+
+RESET:
+	  ; Clearing operands, resetting register values
+	  LOAD op10, 0	
+	  LOAD op11, 0
+	  LOAD op20, 0	
+	  LOAD op21, 0
+	  LOAD res0, 0	
+	  LOAD res1, 0
+	  LOAD res2, 0
+	  LOAD res3, 0
+	  LOAD temp0, 0	 
+	  LOAD temp1, 0	 
+	  LOAD counter, 0
+	  	
+  	  LOAD FP, 0	
+	  LOAD FR, 0
+	  LOAD KEYCODE, 0
+  	
+	  LOAD temp0, IMG_BLANK		; Blank symbol
+
+	  ;	   Clearing the VGA screen
+	  OUT temp0, port1
+	  OUT temp0, port2
+	  OUT temp0, port3
+	  OUT temp0, port4
+	  
+	  OUT temp0, port5
+	  OUT temp0, port6
+	  OUT temp0, port7
+	  OUT temp0, port8
+	
+	  LOAD temp0, 0
+	
+	  RET	
+
+ADD_0:
+	  LOAD temp0, 0
+	  COMP counter, 0	; counter = 0 -> adding to full part
+	  CALL Z, ADDTOFP
+	
+   	  COMP counter, 1	; counter = 1 -> multiply by 10 and add to fraction part
+	  CALL Z, MULTIPLYADDTOFR
+	  	
+   	  COMP counter, 2	; counter = 2 -> add to fraction part
+   	  CALL Z, ADDTOFR
+   	  RET
+	
+
+ADD_1:
+	  LOAD temp0, 1
+	  COMP counter, 0	; counter = 0 -> adding to full part
+	  CALL Z, ADDTOFP
+	  
+   	  COMP counter, 1	; counter = 1 -> multiply by 10 and add to fraction part
+	  CALL Z, MULTIPLYADDTOFR
+	  	
+   	  COMP counter, 2	; counter = 2 -> add to fraction part
+   	  CALL Z, ADDTOFR
+   	  RET
+	
+ADD_2:
+	  load temp0, 2
+	  COMP counter, 0	; counter = 0 -> adding to full part
+	  CALL Z, ADDTOFP
+	
+   	  COMP counter, 1	; counter = 1 -> multiply by 10 and add to fraction part
+	  CALL Z, MULTIPLYADDTOFR
+	  	
+   	  COMP counter, 2	; counter = 2 -> add to fraction part
+   	  CALL Z, ADDTOFR
+   	  RET
+
+ADD_3:
+	
+	  LOAD temp0, 3
+	  COMP counter, 0	; counter = 0 -> adding to full part
+	  CALL Z, ADDTOFP
+	
+   	  COMP counter, 1	; counter = 1 -> multiply by 10 and add to fraction part
+	  CALL Z, MULTIPLYADDTOFR
+	  	
+   	  COMP counter, 2	; counter = 2 -> add to fraction part
+   	  CALL Z, ADDTOFR
+   	  RET
+ADD_4:
+	  load temp0, 4
+	  COMP counter, 0	; counter = 0 -> adding to full part
+	  CALL Z, ADDTOFP
+	
+   	  COMP counter, 1	; counter = 1 -> multiply by 10 and add to fraction part
+	  CALL Z, MULTIPLYADDTOFR
+	  	
+   	  COMP counter, 2	; counter = 2 -> add to fraction part
+   	  CALL Z, ADDTOFR
+ 	  RET
+
+ADD_5:
+	  LOAD temp0, 5
+	  COMP counter, 0	; counter = 0 -> adding to full part
+	  CALL Z, ADDTOFP
+	
+   	  COMP counter, 1	; counter = 1 -> multiply by 10 and add to fraction part
+	  CALL Z, MULTIPLYADDTOFR
+	  	
+   	  COMP counter, 2	; counter = 2 -> add to fraction part
+   	  CALL Z, ADDTOFR
+   	  RET
+	
+ADD_6:
+	  LOAD temp0, 6
+	  COMP counter, 0	; counter = 0 -> adding to full part
+	  CALL Z, ADDTOFP
+	
+   	  COMP counter, 1	; counter = 1 -> multiply by 10 and add to fraction part
+	  CALL Z, MULTIPLYADDTOFR
+	  	
+   	  COMP counter, 2	; counter = 2 -> add to fraction part
+   	  CALL Z, ADDTOFR
+   	  RET
+
+ADD_7:
+	  LOAD temp0, 7
+	  COMP counter, 0	; counter = 0 -> adding to full part
+	  CALL Z, ADDTOFP
+	
+   	  COMP counter, 1	; counter = 1 -> multiply by 10 and add to fraction part
+	  CALL Z, MULTIPLYADDTOFR
+	  	
+   	  COMP counter, 2	; counter = 2 -> add to fraction part
+   	  CALL Z, ADDTOFR
+   	  RET
+	
+ADD_8:
+	  LOAD temp0, 8
+	  COMP counter, 0	; counter = 0 -> adding to full part
+	  CALL Z, ADDTOFP
+	
+   	  COMP counter, 1	; counter = 1 -> multiply by 10 and add to fraction part
+	  CALL Z, MULTIPLYADDTOFR
+	  	
+   	  COMP counter, 2	; counter = 2 -> add to fraction part
+   	  CALL Z, ADDTOFR
+   	  RET
+
+ADD_9:
+	  LOAD temp0, 9
+	  COMP counter, 0	; counter = 0 -> adding to full part
+	  CALL Z, ADDTOFP
+	
+   	  COMP counter, 1	; counter = 1 -> multiply by 10 and add to fraction part
+	  CALL Z, MULTIPLYADDTOFR
+	  	
+   	  COMP counter, 2	; counter = 2 -> add to fraction part
+   	  CALL Z, ADDTOFR
+   	  RET
+
+KBR:
+	; Loading the key
+	
+	IN KEYCODE, KBR_IN   ; Reading the RAM value
+	
+	COMP KEYCODE, NUM_1
+	LOAD temp0, 1
+	CALL Z, ADD_1
+	
+	COMP KEYCODE, NUM_2
+	LOAD temp0, 2
+	CALL Z, ADD_2
+	
+	COMP KEYCODE, NUM_3
+	LOAD temp0, 3
+	CALL Z, ADD_3
+	
+	COMP KEYCODE, NUM_4
+	LOAD temp0, 4
+	CALL Z, ADD_4
+	
+	COMP KEYCODE, NUM_5
+	LOAD temp0, 5
+	CALL Z, ADD_5
+	
+	COMP KEYCODE, NUM_6
+	LOAD temp0, 6
+	CALL Z, ADD_6
+	
+	COMP KEYCODE, NUM_7
+	LOAD temp0, 7
+	CALL Z, ADD_7
+	
+	COMP KEYCODE, NUM_8
+	LOAD temp0, 8
+	CALL Z, ADD_8
+	
+	COMP KEYCODE, NUM_9
+	LOAD temp0, 9
+	CALL Z, ADD_9
+	
+	COMP KEYCODE, NUM_0
+	LOAD temp0, 0
+	CALL Z, ADD_0
+	
+	COMP KEYCODE, ENT
+	CALL Z, ENTER
+	
+	ADD counter, 1
+	
+	COMP KEYCODE, PLUS
+	CALL Z, RESET
+	
+	LOAD temp0, 0
+	
+	RET
+ISR:
+	; Interruption handling
+	
+	CALL KBR	  		   ; Keyboard read
+	
+	RETI ENABLE			   ; Re-enable interrupts
+
+
+ORG $3FF;	  address $3ff
+JUMP ISR
+
